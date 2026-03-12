@@ -16,45 +16,38 @@ const http = require("http");
 require("dotenv").config();
 
 // ═══════════════════════════════════════════════════════════════
-//  CONFIG
+//  CONFIG — كلها من .env
 // ═══════════════════════════════════════════════════════════════
-const TOKEN = process.env.DISCORD_TOKEN;
-
-const DEFAULT_CONFIG = {
-  logChannelId:    process.env.LOG_CHANNEL_ID    || "",
-  publicChannelId: process.env.PUBLIC_CHANNEL_ID || "",
-  panelChannelId:  process.env.PANEL_CHANNEL_ID  || "",
-  embedColor:      "0x5865F2",
-  panelTitle:      "🕊️ بوت الزاجل",
-  panelDesc:       "اضغط على الزر أدناه لإرسال رسالتك 👇",
-};
+const TOKEN          = process.env.DISCORD_TOKEN;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
+const PUBLIC_CH_ID   = process.env.PUBLIC_CHANNEL_ID;
+const PANEL_CH_ID    = process.env.PANEL_CHANNEL_ID;
+const EMBED_COLOR    = parseInt(process.env.EMBED_COLOR || "0x5865F2");
+const PANEL_TITLE    = process.env.PANEL_TITLE || "🕊️ بوت الزاجل";
+const PANEL_DESC     = process.env.PANEL_DESC  || "أرسل رسالتك لأي شخص في السيرفر أو للعام 👇";
 
 // ═══════════════════════════════════════════════════════════════
-//  JSON STORE
+//  JSON STORE — للجلسات والحظر فقط
 // ═══════════════════════════════════════════════════════════════
 const DATA_FILE = path.join(__dirname, "data.json");
 
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({ config: DEFAULT_CONFIG, bans: {}, sessions: {} }, null, 2));
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ bans: {}, sessions: {} }, null, 2));
   }
-  const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  if (!data.sessions) data.sessions = {};
-  return data;
+  const d = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  if (!d.sessions) d.sessions = {};
+  if (!d.bans)     d.bans     = {};
+  return d;
 }
 
-function saveData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-function getConfig()                { return loadData().config; }
-function updateConfig(key, value)   { const d = loadData(); d.config[key] = value; saveData(d); }
-function getBans()                  { return loadData().bans; }
-function addBan(uid, info)          { const d = loadData(); d.bans[uid] = info; saveData(d); }
-function removeBan(uid)             { const d = loadData(); delete d.bans[uid]; saveData(d); }
-function getSession(uid)            { return loadData().sessions[uid] || null; }
-function setSession(uid, data)      { const d = loadData(); d.sessions[uid] = data; saveData(d); }
-function clearSession(uid)          { const d = loadData(); delete d.sessions[uid]; saveData(d); }
+function saveData(d)           { fs.writeFileSync(DATA_FILE, JSON.stringify(d, null, 2)); }
+function getBans()             { return loadData().bans; }
+function addBan(uid, info)     { const d = loadData(); d.bans[uid] = info; saveData(d); }
+function removeBan(uid)        { const d = loadData(); delete d.bans[uid]; saveData(d); }
+function getSession(uid)       { return loadData().sessions[uid] ?? null; }
+function setSession(uid, data) { const d = loadData(); d.sessions[uid] = data; saveData(d); }
+function clearSession(uid)     { const d = loadData(); delete d.sessions[uid]; saveData(d); }
 
 function isBanned(uid) {
   const b = getBans()[uid];
@@ -75,7 +68,7 @@ function parseDuration(str) {
 function formatDuration(until) {
   if (until === "permanent") return "دائم ♾️";
   const diff = until - Date.now();
-  if (diff <= 0) return "انتهى";
+  if (diff <= 0) return "انتهت";
   const h = Math.floor(diff / 3600000);
   const d = Math.floor(h / 24);
   return d > 0 ? `${d} يوم` : `${h} ساعة`;
@@ -99,73 +92,62 @@ const client = new Client({
 //  COLORS
 // ═══════════════════════════════════════════════════════════════
 const C = {
-  main:     0x5865F2,
-  dm:       0x57F287,
-  log:      0xFEE75C,
-  delete:   0xED4245,
-  edit:     0xEB459E,
-  join:     0x57F287,
-  leave:    0xED4245,
-  ban:      0xFF0000,
-  unban:    0x00FF99,
-  warn:     0xFF8800,
+  main:   EMBED_COLOR,
+  green:  0x57F287,
+  red:    0xED4245,
+  yellow: 0xFEE75C,
+  pink:   0xEB459E,
+  orange: 0xFF8800,
 };
 
 // ═══════════════════════════════════════════════════════════════
-//  LOG HELPER
+//  LOG
 // ═══════════════════════════════════════════════════════════════
-async function log(guild, title, user, fields = [], color = C.log) {
-  const cfg = getConfig();
-  const ch  = guild?.channels?.cache?.get(cfg.logChannelId);
+async function log(guild, title, user, fields = [], color = C.yellow) {
+  const ch = guild?.channels?.cache?.get(LOG_CHANNEL_ID);
   if (!ch) return;
-
   const embed = new EmbedBuilder().setTitle(title).setColor(color).setTimestamp();
-
   if (user) {
     embed.setAuthor({ name: user.tag ?? String(user), iconURL: user.displayAvatarURL?.() });
     embed.addFields({ name: "👤 المستخدم", value: `<@${user.id}> (\`${user.id}\`)`, inline: true });
   }
-
   for (const f of fields) {
     embed.addFields({ name: f.name, value: String(f.value || "—").slice(0, 1024), inline: !!f.inline });
   }
-
   await ch.send({ embeds: [embed] }).catch(() => {});
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  BUILD: PANEL
+//  BUILDERS
 // ═══════════════════════════════════════════════════════════════
-function buildPanel() {
-  const cfg   = getConfig();
-  const color = parseInt(cfg.embedColor) || C.main;
 
+function buildPanel() {
   const embed = new EmbedBuilder()
-    .setTitle(cfg.panelTitle)
-    .setDescription(cfg.panelDesc)
-    .setColor(color)
+    .setTitle(PANEL_TITLE)
+    .setDescription(PANEL_DESC)
+    .setColor(C.main)
+    .addFields(
+      { name: "📢 للعام",  value: "تظهر للكل في القناة",       inline: true },
+      { name: "🔒 لشخص",  value: "تصل على DM لشخص تختاره",    inline: true },
+    )
     .setFooter({ text: "🕊️ بوت الزاجل — رسائلك تصل" })
     .setTimestamp();
 
   const btn = new ButtonBuilder()
     .setCustomId("start_pigeon")
-    .setLabel("📬 أرسل رسالة")
+    .setLabel("📬  أرسل رسالة")
     .setStyle(ButtonStyle.Primary);
 
   return { embeds: [embed], components: [new ActionRowBuilder().addComponents(btn)] };
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  BUILD: DM WELCOME
-// ═══════════════════════════════════════════════════════════════
-function buildWelcomeDM(user, guildName) {
+function buildWelcomeDM(username, guildName) {
   const embed = new EmbedBuilder()
     .setTitle("🕊️ أهلاً بك في بوت الزاجل")
     .setDescription(
-      `مرحباً **${user.displayName}** 👋\n\n` +
-      `بوت الزاجل يخليك ترسل رسائلك بشكل مرتب وأنيق من سيرفر **${guildName}**.\n\n` +
-      `**وش تبي ترسل؟**\n` +
-      `اختر من القائمة أدناه 👇`
+      `مرحباً **${username}** 👋\n\n` +
+      `جاهز تبعث رسالتك من سيرفر **${guildName}**\n\n` +
+      `**الخطوة الأولى — اختر نوع رسالتك:**`
     )
     .setColor(C.main)
     .setFooter({ text: "🕊️ بوت الزاجل" })
@@ -173,167 +155,106 @@ function buildWelcomeDM(user, guildName) {
 
   const menu = new StringSelectMenuBuilder()
     .setCustomId("dm_type_select")
-    .setPlaceholder("اختر نوع رسالتك...")
+    .setPlaceholder("📋 اختر نوع الرسالة...")
     .addOptions([
-      { label: "📝 نص فقط",              description: "رسالة نصية",                    value: "text",  emoji: "📝" },
-      { label: "🖼️ صورة",                description: "صورة مع نص اختياري",            value: "image", emoji: "🖼️" },
-      { label: "🎬 فيديو",               description: "فيديو مع نص اختياري",           value: "video", emoji: "🎬" },
-      { label: "🎙️ رسالة صوتية",         description: "صوتية مع نص اختياري",           value: "voice", emoji: "🎙️" },
-      { label: "📦 كل شي",              description: "نص + ملف بنفس الوقت",            value: "all",   emoji: "📦" },
+      { label: "📝 نص فقط",       description: "رسالة نصية",               value: "text",  emoji: "📝" },
+      { label: "🖼️ صورة",         description: "صورة مع نص اختياري",       value: "image", emoji: "🖼️" },
+      { label: "🎬 فيديو",        description: "فيديو مع نص اختياري",      value: "video", emoji: "🎬" },
+      { label: "🎙️ رسالة صوتية", description: "ملف صوتي مع نص اختياري",   value: "voice", emoji: "🎙️" },
+      { label: "📦 نص + ملف",    description: "نص مع أي نوع من الملفات",  value: "all",   emoji: "📦" },
     ]);
 
   return { embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)] };
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  BUILD: ASK CONTENT (بعد اختيار النوع)
-// ═══════════════════════════════════════════════════════════════
 function buildAskContent(type) {
-  const map = {
-    text:  { title: "📝 اكتب رسالتك",         desc: "أرسل رسالتك النصية هنا وأنا بأنقلها 👇" },
-    image: { title: "🖼️ أرسل الصورة",          desc: "أرسل الصورة مباشرة هنا (مع نص اختياري) 👇" },
-    video: { title: "🎬 أرسل الفيديو",          desc: "أرسل الفيديو مباشرة هنا (مع نص اختياري) 👇" },
-    voice: { title: "🎙️ أرسل الرسالة الصوتية", desc: "أرسل الملف الصوتي مباشرة هنا (مع نص اختياري) 👇" },
-    all:   { title: "📦 أرسل رسالتك + الملف",  desc: "أرسل رسالتك النصية أولاً، أو أرسل الملف مع نص 👇" },
-  };
+  const info = {
+    text:  { icon: "📝", title: "اكتب رسالتك",          hint: "أرسل نصك هنا مباشرة 👇" },
+    image: { icon: "🖼️", title: "أرسل الصورة",          hint: "أرسل الصورة مع نص اختياري 👇" },
+    video: { icon: "🎬", title: "أرسل الفيديو",          hint: "أرسل الفيديو مع نص اختياري 👇" },
+    voice: { icon: "🎙️", title: "أرسل الرسالة الصوتية", hint: "أرسل الملف الصوتي مع نص اختياري 👇" },
+    all:   { icon: "📦", title: "أرسل نصك والملف",      hint: "أرسل الملف مع النص أو بدونه 👇" },
+  }[type];
 
-  const info = map[type];
   const embed = new EmbedBuilder()
-    .setTitle(info.title)
-    .setDescription(info.desc)
+    .setTitle(`${info.icon} ${info.title}`)
+    .setDescription(info.hint)
     .setColor(C.main)
-    .setFooter({ text: "عندك 3 دقائق للرد • 🕊️ بوت الزاجل" });
+    .setFooter({ text: "⏳ عندك 3 دقائق • اضغط إلغاء للخروج" });
 
-  const cancelBtn = new ButtonBuilder()
+  const cancel = new ButtonBuilder()
     .setCustomId("cancel_session")
     .setLabel("❌ إلغاء")
     .setStyle(ButtonStyle.Danger);
 
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(cancelBtn)] };
+  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(cancel)] };
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  BUILD: ASK DESTINATION (عام ولا خاص)
-// ═══════════════════════════════════════════════════════════════
 function buildAskDestination() {
   const embed = new EmbedBuilder()
     .setTitle("📮 وين تبي ترسل؟")
-    .setDescription("اختر وجهة رسالتك 👇")
     .setColor(C.main)
+    .addFields(
+      { name: "📢 للعام",  value: "تظهر في قناة السيرفر العامة", inline: true },
+      { name: "🔒 لشخص",  value: "تصل على DM لشخص تختاره",      inline: true },
+    )
     .setFooter({ text: "🕊️ بوت الزاجل" });
 
-  const publicBtn = new ButtonBuilder()
-    .setCustomId("send_public")
-    .setLabel("📢 إرسال للعام")
-    .setStyle(ButtonStyle.Primary);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("send_public").setLabel("📢 للعام").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("send_private").setLabel("🔒 لشخص").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("cancel_session").setLabel("❌ إلغاء").setStyle(ButtonStyle.Danger),
+  );
 
-  const privateBtn = new ButtonBuilder()
-    .setCustomId("send_private")
-    .setLabel("🔒 إرسال لخاصي")
-    .setStyle(ButtonStyle.Secondary);
+  return { embeds: [embed], components: [row] };
+}
 
-  const cancelBtn = new ButtonBuilder()
+function buildAskMemberId() {
+  const embed = new EmbedBuilder()
+    .setTitle("🔍 من تبي ترسل له؟")
+    .setDescription(
+      "أرسل **ID** العضو هنا 👇\n\n" +
+      "**كيف أحصل على الـ ID؟**\n" +
+      "كليك يمين على العضو ← `Copy User ID`\n" +
+      "*(فعّل Developer Mode في إعدادات الديسكورد)*"
+    )
+    .setColor(C.main)
+    .setFooter({ text: "⏳ عندك دقيقتين • 🕊️ بوت الزاجل" });
+
+  const cancel = new ButtonBuilder()
     .setCustomId("cancel_session")
     .setLabel("❌ إلغاء")
     .setStyle(ButtonStyle.Danger);
 
-  return {
-    embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(publicBtn, privateBtn, cancelBtn)],
-  };
+  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(cancel)] };
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  BUILD: FINAL EMBED (الرسالة النهائية)
-// ═══════════════════════════════════════════════════════════════
-function buildFinalEmbed(user, session, isPublic) {
-  const cfg   = getConfig();
-  const color = parseInt(cfg.embedColor) || C.main;
-  const type  = session.type;
-
-  const typeLabels = {
-    text:  "📝 رسالة نصية",
+function buildFinalEmbed(user, session, destination) {
+  const typeLabel = {
+    text:  "📝 نص",
     image: "🖼️ صورة",
     video: "🎬 فيديو",
     voice: "🎙️ صوتية",
-    all:   "📦 رسالة + ملف",
-  };
+    all:   "📦 نص + ملف",
+  }[session.type];
 
   const embed = new EmbedBuilder()
     .setAuthor({ name: user.displayName, iconURL: user.displayAvatarURL() })
-    .setColor(color)
-    .setFooter({ text: `${typeLabels[type]} • ${isPublic ? "📢 عام" : "🔒 خاص"} • 🕊️ بوت الزاجل` })
-    .setTimestamp();
+    .setColor(C.main)
+    .setTimestamp()
+    .setFooter({ text: `${typeLabel} • ${destination} • 🕊️ بوت الزاجل` });
 
   if (session.text) embed.setDescription(session.text);
 
   if (session.fileUrl) {
-    if (type === "image") embed.setImage(session.fileUrl);
-    else embed.addFields({ name: "📎 مرفق", value: `[اضغط هنا](${session.fileUrl})`, inline: false });
+    if (session.type === "image") {
+      embed.setImage(session.fileUrl);
+    } else {
+      embed.addFields({ name: "📎 مرفق", value: `[اضغط للتحميل](${session.fileUrl})`, inline: false });
+    }
   }
 
   return embed;
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  BUILD: SETTINGS PANEL
-// ═══════════════════════════════════════════════════════════════
-function buildSettingsPanel() {
-  const cfg = getConfig();
-
-  const embed = new EmbedBuilder()
-    .setTitle("⚙️ إعدادات بوت الزاجل")
-    .setColor(C.main)
-    .addFields(
-      { name: "📋 قناة اللوق",      value: cfg.logChannelId    ? `<#${cfg.logChannelId}>`    : "غير محددة", inline: true },
-      { name: "📢 القناة العامة",   value: cfg.publicChannelId ? `<#${cfg.publicChannelId}>` : "غير محددة", inline: true },
-      { name: "📌 قناة البانل",     value: cfg.panelChannelId  ? `<#${cfg.panelChannelId}>`  : "غير محددة", inline: true },
-      { name: "🎨 لون الـ Embed",   value: cfg.embedColor,      inline: true },
-      { name: "📝 عنوان البانل",    value: cfg.panelTitle,      inline: false },
-      { name: "💬 وصف البانل",      value: cfg.panelDesc,       inline: false },
-    )
-    .setFooter({ text: "اختر الإعداد من القائمة" })
-    .setTimestamp();
-
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId("settings_menu")
-    .setPlaceholder("🔧 اختر الإعداد...")
-    .addOptions([
-      { label: "📋 قناة اللوق",      value: "set_log",    emoji: "📋" },
-      { label: "📢 القناة العامة",   value: "set_public", emoji: "📢" },
-      { label: "📌 قناة البانل",     value: "set_panel",  emoji: "📌" },
-      { label: "🎨 لون الـ Embed",   value: "set_color",  emoji: "🎨" },
-      { label: "📝 عنوان البانل",    value: "set_title",  emoji: "📝" },
-      { label: "💬 وصف البانل",      value: "set_desc",   emoji: "💬" },
-    ]);
-
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true };
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  BUILD: COMMANDS
-// ═══════════════════════════════════════════════════════════════
-function buildCommandsPanel() {
-  const embed = new EmbedBuilder()
-    .setTitle("📖 أوامر بوت الزاجل")
-    .setColor(C.main)
-    .addFields(
-      { name: "━━━━━━━━━━ 👑 أوامر الأدمن ━━━━━━━━━━", value: "\u200b" },
-      { name: "`!setup_panel`",           value: "ينشر رسالة البانل في القناة" },
-      { name: "`!settings`",              value: "يفتح لوحة الإعدادات" },
-      { name: "`!commands`",              value: "يعرض هذه القائمة" },
-      { name: "`!ban @عضو [مدة] [سبب]`", value: "يحظر عضو من البوت\n**المدة:** `1h` `1d` `7d` `permanent`" },
-      { name: "`!unban @عضو`",            value: "يفك الحظر عن عضو" },
-      { name: "`!bans`",                  value: "قائمة المحظورين" },
-      { name: "━━━━━━━━━━ 👥 للأعضاء ━━━━━━━━━━", value: "\u200b" },
-      { name: "البانل",                   value: "اضغط الزر ← يجيك DM ← تختار النوع ← ترسل ← تختار عام أو خاص" },
-      { name: "━━━━━━━━━━ 👁️ اللوق التلقائي ━━━━━━━━━━", value: "\u200b" },
-      { name: "تلقائي",                  value: "📩 رسائل • ✏️ تعديل • 🗑️ حذف • ✅ دخول • 👋 خروج • 🚫 حظر" },
-    )
-    .setFooter({ text: "🕊️ بوت الزاجل" })
-    .setTimestamp();
-
-  return { embeds: [embed], ephemeral: true };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -344,96 +265,156 @@ client.once(Events.ClientReady, () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-//  MESSAGE CREATE
+//  MESSAGE CREATE — handler واحد بس
 // ═══════════════════════════════════════════════════════════════
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
 
-  // ── DM: استقبال المحتوى من الجلسة ──
+  // ══════════════════════
+  //  DM
+  // ══════════════════════
   if (!msg.guild) {
     const session = getSession(msg.author.id);
-    if (!session || session.step !== "waiting_content") return;
+    if (!session) return;
 
-    // نجمع النص والملف
-    const text      = msg.content?.trim() || "";
-    const attachment = msg.attachments?.first();
-    const fileUrl   = attachment?.url || null;
+    // انتظار المحتوى
+    if (session.step === "waiting_content") {
+      const text       = msg.content?.trim() || "";
+      const attachment = msg.attachments?.first();
+      const fileUrl    = attachment?.url || null;
 
-    // تحقق إن المحتوى يناسب النوع المختار
-    if (session.type === "text" && !text) {
-      return msg.reply("❌ أرسل رسالة نصية.");
+      if (session.type === "text" && !text)
+        return msg.channel.send("❌ أرسل نصاً.");
+
+      if (["image","video","voice","all"].includes(session.type) && !fileUrl && !text)
+        return msg.channel.send("❌ أرسل ملفاً أو نصاً على الأقل.");
+
+      setSession(msg.author.id, {
+        ...session,
+        step:      "waiting_destination",
+        text:      text    || null,
+        fileUrl:   fileUrl || null,
+        expiresAt: Date.now() + 5 * 60 * 1000,
+      });
+
+      return msg.channel.send(buildAskDestination());
     }
-    if (["image","video","voice"].includes(session.type) && !fileUrl && !text) {
-      return msg.reply("❌ أرسل ملف أو نص على الأقل.");
+
+    // انتظار ID العضو
+    if (session.step === "waiting_member_id") {
+      const rawId = msg.content?.trim().replace(/\D/g, "");
+      if (!rawId) return msg.channel.send("❌ أرسل ID صحيح (أرقام فقط).");
+
+      const guild  = client.guilds.cache.get(session.guildId);
+      const member = await guild?.members.fetch(rawId).catch(() => null);
+
+      if (!member)
+        return msg.channel.send("❌ ما لقيت هذا العضو في السيرفر، تأكد من الـ ID وحاول مرة ثانية.");
+
+      const embed = buildFinalEmbed(msg.author, session, "🔒 خاص");
+
+      try {
+        if (session.fileUrl) {
+          await member.user.send({ embeds: [embed], files: [session.fileUrl] })
+            .catch(() => member.user.send({ embeds: [embed] }));
+        } else {
+          await member.user.send({ embeds: [embed] });
+        }
+
+        clearSession(msg.author.id);
+        await msg.channel.send({
+          embeds: [new EmbedBuilder()
+            .setTitle("✅ وصلت!")
+            .setDescription(`رسالتك وصلت لـ **${member.user.displayName}** 🕊️`)
+            .setColor(C.green).setTimestamp()
+          ]
+        });
+
+        await log(guild, "🔒 رسالة خاصة أُرسلت", msg.author, [
+          { name: "المستلم", value: `<@${member.id}>`,       inline: true  },
+          { name: "النوع",   value: session.type,             inline: true  },
+          { name: "النص",    value: session.text    || "—",   inline: false },
+          { name: "الملف",   value: session.fileUrl || "—",   inline: false },
+        ], C.green);
+
+      } catch {
+        clearSession(msg.author.id);
+        await msg.channel.send("❌ العضو أغلق رسائله الخاصة، ما قدرت أرسل.");
+      }
+      return;
     }
 
-    // حفظ المحتوى وانتقل لخطوة الوجهة
-    setSession(msg.author.id, {
-      ...session,
-      step:    "waiting_destination",
-      text:    text || null,
-      fileUrl: fileUrl || null,
-    });
-
-    await msg.reply(buildAskDestination());
     return;
   }
 
-  // ── السيرفر: لوق كل رسالة ──
+  // ══════════════════════
+  //  السيرفر
+  // ══════════════════════
+
+  // لوق الرسائل
   const logFields = [
     { name: "💬 المحتوى", value: msg.content || "لا يوجد نص", inline: false },
     { name: "📍 القناة",  value: `<#${msg.channel.id}>`,       inline: true  },
   ];
   if (msg.attachments.size > 0) {
-    const list = [...msg.attachments.values()].map(a => `[${a.name}](${a.url})`).join("\n");
-    logFields.push({ name: "📎 مرفقات", value: list, inline: false });
+    logFields.push({
+      name:  "📎 مرفقات",
+      value: [...msg.attachments.values()].map(a => `[${a.name}](${a.url})`).join("\n"),
+      inline: false,
+    });
   }
-  await log(msg.guild, "📩 رسالة جديدة", msg.author, logFields, C.log);
+  await log(msg.guild, "📩 رسالة جديدة", msg.author, logFields, C.yellow);
 
   const isAdmin = msg.member?.permissions.has(PermissionFlagsBits.Administrator);
   const content = msg.content.trim();
 
-  // ── !setup_panel ──
+  // !setup_panel
   if (content === "!setup_panel") {
     if (!isAdmin) return msg.reply("❌ للأدمن فقط.");
     await msg.channel.send(buildPanel());
-    await msg.delete().catch(() => {});
-    return;
+    return msg.delete().catch(() => {});
   }
 
-  // ── !settings ──
-  if (content === "!settings") {
-    if (!isAdmin) return msg.reply("❌ للأدمن فقط.");
-    await msg.reply(buildSettingsPanel());
-    await msg.delete().catch(() => {});
-    return;
-  }
-
-  // ── !commands ──
+  // !commands
   if (content === "!commands") {
-    await msg.reply(buildCommandsPanel());
-    await msg.delete().catch(() => {});
-    return;
+    const embed = new EmbedBuilder()
+      .setTitle("📖 أوامر بوت الزاجل")
+      .setColor(C.main)
+      .addFields(
+        { name: "━━━━━━━ 👑 الأدمن ━━━━━━━",             value: "\u200b" },
+        { name: "`!setup_panel`",                         value: "ينشر البانل في القناة" },
+        { name: "`!commands`",                            value: "يعرض هذه القائمة" },
+        { name: "`!ban @عضو [مدة] [سبب]`",               value: "يحظر عضو من البوت\n**المدة:** `1h` `1d` `7d` `permanent`" },
+        { name: "`!unban @عضو`",                          value: "يفك الحظر عن عضو" },
+        { name: "`!bans`",                                value: "قائمة المحظورين" },
+        { name: "━━━━━━━ 👥 الأعضاء ━━━━━━━",            value: "\u200b" },
+        { name: "البانل",                                 value: "زر ← DM ← نوع ← محتوى ← عام أو لشخص بـ ID" },
+        { name: "━━━━━━━ 👁️ اللوق التلقائي ━━━━━━━",     value: "\u200b" },
+        { name: "تلقائي",                                 value: "📩 رسائل • ✏️ تعديل • 🗑️ حذف • ✅ دخول • 👋 خروج • 🚫 حظر" },
+      )
+      .setFooter({ text: "🕊️ بوت الزاجل" })
+      .setTimestamp();
+    await msg.reply({ embeds: [embed] });
+    return msg.delete().catch(() => {});
   }
 
-  // ── !ban ──
+  // !ban
   if (content.startsWith("!ban ")) {
     if (!isAdmin) return msg.reply("❌ للأدمن فقط.");
     const target = msg.mentions.users.first();
-    if (!target) return msg.reply("❌ حدد عضو. مثال: `!ban @علي 1d سبب`");
+    if (!target) return msg.reply("❌ مثال: `!ban @علي 1d سبب`");
 
-    const afterMention = content.replace(/^!ban\s+<@!?\d+>\s*/, "");
-    const parts        = afterMention.split(" ");
-    const rawDur       = parts[0] || "permanent";
-    const reason       = parts.slice(1).join(" ") || "لا يوجد سبب";
-    const until        = parseDuration(rawDur);
+    const after  = content.replace(/^!ban\s+<@!?\d+>\s*/, "");
+    const parts  = after.split(" ");
+    const until  = parseDuration(parts[0] || "permanent");
+    const reason = parts.slice(1).join(" ") || "لا يوجد سبب";
     if (until === null) return msg.reply("❌ مدة خاطئة. استخدم: `1h` `1d` `7d` `permanent`");
 
     if (!isBanned(target.id)) {
       await target.send({ embeds: [new EmbedBuilder()
         .setTitle("⚠️ تحذير — بوت الزاجل")
-        .setDescription(`تلقيت **تحذيراً** في سيرفر **${msg.guild.name}**\n\n**السبب:** ${reason}`)
-        .setColor(C.warn).setTimestamp()
+        .setDescription(`تلقيت تحذيراً في **${msg.guild.name}**\n**السبب:** ${reason}`)
+        .setColor(C.orange).setTimestamp()
       ]}).catch(() => {});
     }
 
@@ -442,7 +423,7 @@ client.on(Events.MessageCreate, async (msg) => {
     await target.send({ embeds: [new EmbedBuilder()
       .setTitle("🚫 تم حظرك من بوت الزاجل")
       .setDescription(`**السيرفر:** ${msg.guild.name}\n**السبب:** ${reason}\n**المدة:** ${formatDuration(until)}`)
-      .setColor(C.ban).setTimestamp()
+      .setColor(C.red).setTimestamp()
     ]}).catch(() => {});
 
     await msg.reply({ embeds: [new EmbedBuilder()
@@ -451,22 +432,22 @@ client.on(Events.MessageCreate, async (msg) => {
       .addFields(
         { name: "السبب", value: reason,                inline: true },
         { name: "المدة", value: formatDuration(until), inline: true },
-      ).setColor(C.ban).setTimestamp()
+      ).setColor(C.red).setTimestamp()
     ]});
 
     await log(msg.guild, "🚫 حظر من البوت", target, [
       { name: "السبب",  value: reason,                inline: false },
       { name: "المدة",  value: formatDuration(until), inline: true  },
       { name: "بواسطة", value: `<@${msg.author.id}>`, inline: true  },
-    ], C.ban);
+    ], C.red);
     return;
   }
 
-  // ── !unban ──
+  // !unban
   if (content.startsWith("!unban ")) {
     if (!isAdmin) return msg.reply("❌ للأدمن فقط.");
     const target = msg.mentions.users.first();
-    if (!target) return msg.reply("❌ حدد عضو.");
+    if (!target) return msg.reply("❌ مثال: `!unban @علي`");
     if (!getBans()[target.id]) return msg.reply("⚠️ هذا العضو غير محظور.");
 
     removeBan(target.id);
@@ -474,33 +455,33 @@ client.on(Events.MessageCreate, async (msg) => {
     await target.send({ embeds: [new EmbedBuilder()
       .setTitle("✅ تم رفع الحظر عنك")
       .setDescription(`يمكنك الآن استخدام البوت في **${msg.guild.name}**`)
-      .setColor(C.unban).setTimestamp()
+      .setColor(C.green).setTimestamp()
     ]}).catch(() => {});
 
     await msg.reply({ embeds: [new EmbedBuilder()
       .setTitle("✅ تم فك الحظر")
       .setDescription(`تم رفع الحظر عن <@${target.id}>`)
-      .setColor(C.unban).setTimestamp()
+      .setColor(C.green).setTimestamp()
     ]});
 
     await log(msg.guild, "✅ فك حظر", target, [
       { name: "بواسطة", value: `<@${msg.author.id}>`, inline: true },
-    ], C.unban);
+    ], C.green);
     return;
   }
 
-  // ── !bans ──
+  // !bans
   if (content === "!bans") {
     if (!isAdmin) return msg.reply("❌ للأدمن فقط.");
-    const bans = getBans();
-    const list = Object.entries(bans);
-    if (list.length === 0) {
-      return msg.reply({ embeds: [new EmbedBuilder().setTitle("📋 المحظورين").setDescription("لا يوجد محظورين ✅").setColor(C.unban)] });
+    const list = Object.entries(getBans());
+    if (!list.length) {
+      return msg.reply({ embeds: [new EmbedBuilder().setTitle("📋 المحظورين").setDescription("لا يوجد محظورين ✅").setColor(C.green)] });
     }
-    const lines = list.map(([id, info]) => `${isBanned(id) ? "🚫" : "✅"} <@${id}> — ${formatDuration(info.until)} — ${info.reason}`).join("\n");
-    await msg.reply({ embeds: [new EmbedBuilder().setTitle(`📋 المحظورين (${list.length})`).setDescription(lines).setColor(C.ban).setTimestamp()] });
-    await msg.delete().catch(() => {});
-    return;
+    const lines = list.map(([id, info]) =>
+      `${isBanned(id) ? "🚫" : "✅"} <@${id}> — ${formatDuration(info.until)} — ${info.reason}`
+    ).join("\n");
+    await msg.reply({ embeds: [new EmbedBuilder().setTitle(`📋 المحظورين (${list.length})`).setDescription(lines).setColor(C.red).setTimestamp()] });
+    return msg.delete().catch(() => {});
   }
 });
 
@@ -509,9 +490,8 @@ client.on(Events.MessageCreate, async (msg) => {
 // ═══════════════════════════════════════════════════════════════
 client.on(Events.InteractionCreate, async (interaction) => {
 
-  // ── زر: ابدأ الإرسال (البانل) ──
+  // زر البانل
   if (interaction.isButton() && interaction.customId === "start_pigeon") {
-
     if (isBanned(interaction.user.id)) {
       const info = getBans()[interaction.user.id];
       return interaction.reply({
@@ -519,41 +499,41 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ephemeral: true,
       });
     }
-
     try {
-      await interaction.user.send(buildWelcomeDM(interaction.user, interaction.guild.name));
+      await interaction.user.send(buildWelcomeDM(interaction.user.displayName, interaction.guild.name));
       await interaction.reply({ content: "✅ راجع رسائلك الخاصة!", ephemeral: true });
     } catch {
-      await interaction.reply({ content: "❌ ما قدرت أرسل لك DM، فعّل رسائل السيرفر.", ephemeral: true });
+      await interaction.reply({ content: "❌ فعّل رسائل السيرفر من إعدادات الخصوصية.", ephemeral: true });
     }
     return;
   }
 
-  // ── زر: إلغاء الجلسة ──
+  // إلغاء
   if (interaction.isButton() && interaction.customId === "cancel_session") {
     clearSession(interaction.user.id);
-    await interaction.update({ content: "❌ تم إلغاء العملية.", embeds: [], components: [] });
-    return;
+    return interaction.update({
+      embeds: [new EmbedBuilder().setTitle("❌ تم الإلغاء").setColor(C.red)],
+      components: [],
+    });
   }
 
-  // ── زر: إرسال للعام ──
+  // إرسال للعام
   if (interaction.isButton() && interaction.customId === "send_public") {
     const session = getSession(interaction.user.id);
-    if (!session) return interaction.update({ content: "❌ انتهت الجلسة، ابدأ من جديد.", embeds: [], components: [] });
+    if (!session) return interaction.update({ content: "❌ انتهت الجلسة.", embeds: [], components: [] });
 
-    const cfg = getConfig();
-    // نحتاج نجيب الـ guild من السيرفر المحفوظ في الجلسة
     const guild = client.guilds.cache.get(session.guildId);
-    const ch    = guild?.channels?.cache?.get(cfg.publicChannelId);
+    const ch    = guild?.channels?.cache?.get(PUBLIC_CH_ID);
 
     if (!ch) {
       clearSession(interaction.user.id);
-      return interaction.update({ content: "❌ قناة العام غير محددة، تواصل مع الأدمن.", embeds: [], components: [] });
+      return interaction.update({
+        embeds: [new EmbedBuilder().setTitle("❌ خطأ").setDescription("قناة العام غير محددة، تواصل مع الأدمن.").setColor(C.red)],
+        components: [],
+      });
     }
 
-    const embed = buildFinalEmbed(interaction.user, session, true);
-
-    // لو الملف موجود نرسله مع الـ embed
+    const embed = buildFinalEmbed(interaction.user, session, "📢 عام");
     if (session.fileUrl) {
       await ch.send({ embeds: [embed], files: [session.fileUrl] }).catch(() => ch.send({ embeds: [embed] }));
     } else {
@@ -561,146 +541,61 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     clearSession(interaction.user.id);
-    await interaction.update({ content: "✅ تم إرسال رسالتك للعام! 📢", embeds: [], components: [] });
+    await interaction.update({
+      embeds: [new EmbedBuilder().setTitle("✅ وصلت!").setDescription("رسالتك طلعت للعام 📢").setColor(C.green).setTimestamp()],
+      components: [],
+    });
 
-    await log(guild, "📢 رسالة عامة جديدة", interaction.user, [
-      { name: "النوع",    value: session.type,          inline: true  },
-      { name: "النص",     value: session.text   || "—", inline: false },
-      { name: "الملف",    value: session.fileUrl || "—", inline: false },
+    await log(guild, "📢 رسالة عامة", interaction.user, [
+      { name: "النوع",  value: session.type,           inline: true  },
+      { name: "النص",   value: session.text    || "—", inline: false },
+      { name: "الملف",  value: session.fileUrl || "—", inline: false },
     ], C.main);
     return;
   }
 
-  // ── زر: إرسال لخاصي ──
+  // إرسال لشخص
   if (interaction.isButton() && interaction.customId === "send_private") {
     const session = getSession(interaction.user.id);
-    if (!session) return interaction.update({ content: "❌ انتهت الجلسة، ابدأ من جديد.", embeds: [], components: [] });
+    if (!session) return interaction.update({ content: "❌ انتهت الجلسة.", embeds: [], components: [] });
 
-    const embed = buildFinalEmbed(interaction.user, session, false);
-
-    try {
-      if (session.fileUrl) {
-        await interaction.user.send({ embeds: [embed], files: [session.fileUrl] }).catch(() => interaction.user.send({ embeds: [embed] }));
-      } else {
-        await interaction.user.send({ embeds: [embed] });
-      }
-      clearSession(interaction.user.id);
-      await interaction.update({ content: "✅ وصلتك على DM! 🔒", embeds: [], components: [] });
-    } catch {
-      clearSession(interaction.user.id);
-      await interaction.update({ content: "❌ ما قدرت أرسل لك DM.", embeds: [], components: [] });
-    }
-
-    const guild = client.guilds.cache.get(session.guildId);
-    if (guild) {
-      await log(guild, "🔒 رسالة خاصة أُرسلت", interaction.user, [
-        { name: "النوع", value: session.type,           inline: true  },
-        { name: "النص",  value: session.text    || "—", inline: false },
-        { name: "الملف", value: session.fileUrl || "—", inline: false },
-      ], C.dm);
-    }
-    return;
+    setSession(interaction.user.id, { ...session, step: "waiting_member_id", expiresAt: Date.now() + 2 * 60 * 1000 });
+    return interaction.update(buildAskMemberId());
   }
 
-  // ── منيو: نوع الرسالة في الـ DM ──
+  // منيو النوع
   if (interaction.isStringSelectMenu() && interaction.customId === "dm_type_select") {
-    const type = interaction.values[0];
-
-    // نحفظ الجلسة مع الـ guildId (من أين فتح البانل)
-    // نجيب الـ guildId من أي سيرفر فيه البوت (الغالب واحد)
+    const type    = interaction.values[0];
     const guildId = client.guilds.cache.first()?.id || "";
 
     setSession(interaction.user.id, {
-      step:    "waiting_content",
+      step:      "waiting_content",
       type,
       guildId,
-      text:    null,
-      fileUrl: null,
-      expiresAt: Date.now() + 3 * 60 * 1000, // 3 دقائق
+      text:      null,
+      fileUrl:   null,
+      expiresAt: Date.now() + 3 * 60 * 1000,
     });
 
-    await interaction.update(buildAskContent(type));
-    return;
-  }
-
-  // ── منيو: الإعدادات ──
-  if (interaction.isStringSelectMenu() && interaction.customId === "settings_menu") {
-    if (!interaction.member?.permissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ content: "❌ للأدمن فقط.", ephemeral: true });
-    }
-
-    const settingLabels = {
-      set_log:    "ID قناة اللوق",
-      set_public: "ID القناة العامة",
-      set_panel:  "ID قناة البانل",
-      set_color:  "كود اللون (مثال: 0x5865F2)",
-      set_title:  "عنوان البانل الجديد",
-      set_desc:   "وصف البانل الجديد",
-    };
-
-    const settingKeys = {
-      set_log:    "logChannelId",
-      set_public: "publicChannelId",
-      set_panel:  "panelChannelId",
-      set_color:  "embedColor",
-      set_title:  "panelTitle",
-      set_desc:   "panelDesc",
-    };
-
-    const val = interaction.values[0];
-
-    // نحفظ الإعداد المختار في جلسة مؤقتة
-    setSession(`settings_${interaction.user.id}`, { key: settingKeys[val], label: settingLabels[val] });
-
-    await interaction.reply({
-      content: `📝 أرسل **${settingLabels[val]}** الجديد في هذه القناة:`,
-      ephemeral: true,
-    });
-    return;
+    return interaction.update(buildAskContent(type));
   }
 });
 
 // ═══════════════════════════════════════════════════════════════
-//  استقبال إدخال الإعدادات من الأدمن في القناة
-// ═══════════════════════════════════════════════════════════════
-client.on(Events.MessageCreate, async (msg) => {
-  if (msg.author.bot || !msg.guild) return;
-
-  const settingsSession = getSession(`settings_${msg.author.id}`);
-  if (!settingsSession) return;
-
-  const isAdmin = msg.member?.permissions.has(PermissionFlagsBits.Administrator);
-  if (!isAdmin) return;
-
-  updateConfig(settingsSession.key, msg.content.trim());
-  clearSession(`settings_${msg.author.id}`);
-
-  await msg.reply({ content: `✅ تم تحديث **${settingsSession.label}** → \`${msg.content.trim()}\``, ephemeral: true });
-  await log(msg.guild, "⚙️ تغيير إعداد", msg.author, [
-    { name: "الإعداد",        value: settingsSession.key,  inline: true },
-    { name: "القيمة الجديدة", value: msg.content.trim(),   inline: true },
-  ], C.main);
-  await msg.delete().catch(() => {});
-});
-
-// ═══════════════════════════════════════════════════════════════
-//  CLEANUP: جلسات منتهية الصلاحية كل دقيقة
+//  CLEANUP — جلسات منتهية كل دقيقة
 // ═══════════════════════════════════════════════════════════════
 setInterval(() => {
   const data = loadData();
   const now  = Date.now();
-  let changed = false;
-  for (const [uid, session] of Object.entries(data.sessions)) {
-    if (session.expiresAt && now > session.expiresAt) {
-      delete data.sessions[uid];
-      changed = true;
-    }
+  let dirty  = false;
+  for (const [uid, s] of Object.entries(data.sessions)) {
+    if (s.expiresAt && now > s.expiresAt) { delete data.sessions[uid]; dirty = true; }
   }
-  if (changed) saveData(data);
-}, 60 * 1000);
+  if (dirty) saveData(data);
+}, 60_000);
 
 // ═══════════════════════════════════════════════════════════════
-//  LOG: EDIT / DELETE / JOIN / LEAVE
+//  LOG EVENTS
 // ═══════════════════════════════════════════════════════════════
 client.on(Events.MessageUpdate, async (before, after) => {
   if (!after.guild || after.author?.bot) return;
@@ -709,7 +604,7 @@ client.on(Events.MessageUpdate, async (before, after) => {
     { name: "قبل",    value: before.content || "—",    inline: false },
     { name: "بعد",    value: after.content  || "—",    inline: false },
     { name: "القناة", value: `<#${after.channel.id}>`, inline: true  },
-  ], C.edit);
+  ], C.pink);
 });
 
 client.on(Events.MessageDelete, async (msg) => {
@@ -721,26 +616,26 @@ client.on(Events.MessageDelete, async (msg) => {
   if (msg.attachments?.size > 0) {
     fields.push({ name: "📎 مرفقات", value: [...msg.attachments.values()].map(a => `[${a.name}](${a.url})`).join("\n"), inline: false });
   }
-  await log(msg.guild, "🗑️ رسالة محذوفة", msg.author, fields, C.delete);
+  await log(msg.guild, "🗑️ رسالة محذوفة", msg.author, fields, C.red);
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
   await log(member.guild, "✅ عضو انضم", member.user, [
     { name: "تاريخ إنشاء الحساب", value: member.user.createdAt.toLocaleDateString("ar"), inline: true },
-  ], C.join);
+  ], C.green);
 });
 
 client.on(Events.GuildMemberRemove, async (member) => {
   const roles = member.roles.cache.filter(r => r.id !== member.guild.id).map(r => r.name).join(", ") || "لا يوجد";
   await log(member.guild, "👋 عضو غادر", member.user, [
     { name: "الأدوار", value: roles, inline: false },
-  ], C.leave);
+  ], C.red);
 });
 
 // ═══════════════════════════════════════════════════════════════
 //  HTTP SERVER — عشان Render ما يوقف البوت
 // ═══════════════════════════════════════════════════════════════
-http.createServer((req, res) => res.end("🕊️ بوت الزاجل شغّال")).listen(process.env.PORT || 3000);
+http.createServer((_, res) => res.end("🕊️")).listen(process.env.PORT || 3000);
 
 // ═══════════════════════════════════════════════════════════════
 //  LOGIN
