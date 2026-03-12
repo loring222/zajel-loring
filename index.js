@@ -15,9 +15,6 @@ const path = require("path");
 const http = require("http");
 require("dotenv").config();
 
-// ═══════════════════════════════════════════════════════════════
-//  CONFIG — من .env
-// ═══════════════════════════════════════════════════════════════
 const TOKEN          = process.env.DISCORD_TOKEN;
 const LOG_CH_ID      = process.env.LOG_CHANNEL_ID;
 const PUBLIC_CH_ID   = process.env.PUBLIC_CHANNEL_ID;
@@ -26,9 +23,6 @@ const EMBED_COLOR    = parseInt(process.env.EMBED_COLOR  || "0x5865F2");
 const PANEL_TITLE    = process.env.PANEL_TITLE || "🕊️ بوت الزاجل";
 const PANEL_DESC     = process.env.PANEL_DESC  || "أرسل رسالتك لأي شخص في السيرفر أو للعام 👇";
 
-// ═══════════════════════════════════════════════════════════════
-//  JSON STORE
-// ═══════════════════════════════════════════════════════════════
 const DATA_FILE = path.join(__dirname, "data.json");
 
 function loadData() {
@@ -74,9 +68,6 @@ function formatDuration(until) {
   return d > 0 ? `${d} يوم` : `${h} ساعة`;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  CLIENT
-// ═══════════════════════════════════════════════════════════════
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -88,9 +79,6 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.GuildMember],
 });
 
-// ═══════════════════════════════════════════════════════════════
-//  COLORS
-// ═══════════════════════════════════════════════════════════════
 const C = {
   main:   EMBED_COLOR,
   green:  0x57F287,
@@ -101,9 +89,10 @@ const C = {
   gray:   0x99AAB5,
 };
 
-// ═══════════════════════════════════════════════════════════════
-//  LOG — يظهر كل شي بالتفصيل
-// ═══════════════════════════════════════════════════════════════
+// أقفال لمنع التكرار
+const processingUsers        = new Set();
+const processingInteractions = new Set();
+
 async function log(guild, title, user, fields = [], color = C.yellow, fileUrls = []) {
   const ch = guild?.channels?.cache?.get(LOG_CH_ID);
   if (!ch) return;
@@ -119,7 +108,6 @@ async function log(guild, title, user, fields = [], color = C.yellow, fileUrls =
     embed.addFields({ name: f.name, value: String(f.value || "—").slice(0, 1024), inline: !!f.inline });
   }
 
-  // لو في صورة نعرضها في اللوق مباشرة
   if (fileUrls.length > 0) {
     const isImage = (url) => /\.(jpg|jpeg|png|gif|webp)(\?|$)/i.test(url);
     const images  = fileUrls.filter(isImage);
@@ -137,10 +125,6 @@ async function log(guild, title, user, fields = [], color = C.yellow, fileUrls =
 
   await ch.send({ embeds: [embed] }).catch(() => {});
 }
-
-// ═══════════════════════════════════════════════════════════════
-//  BUILDERS
-// ═══════════════════════════════════════════════════════════════
 
 function buildPanel() {
   const embed = new EmbedBuilder()
@@ -240,7 +224,7 @@ function buildAskShowName(destination) {
         : "هل تبي اسمك يظهر للشخص اللي راح يستلم الرسالة؟"
     )
     .setColor(C.main)
-    .setFooter({ text: "في كلا الحالتين اسمك يظهر في لوق الأدمن • 🕊️ بوت الزاجل" });
+    .setFooter({ text: "🕊️ بوت الزاجل" });
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("show_name_yes").setLabel("✅ نعم، أظهر اسمي").setStyle(ButtonStyle.Success),
@@ -271,7 +255,6 @@ function buildAskMemberId() {
   return { embeds: [embed], components: [new ActionRowBuilder().addComponents(cancel)] };
 }
 
-// الرسالة النهائية — showName يتحكم في ظهور الاسم
 function buildFinalEmbed(user, session, destination, showName) {
   const typeLabel = {
     text:  "📝 نص",
@@ -286,7 +269,6 @@ function buildFinalEmbed(user, session, destination, showName) {
     .setTimestamp()
     .setFooter({ text: `${typeLabel} • ${destination} • 🕊️ بوت الزاجل` });
 
-  // الاسم يظهر أو مجهول
   if (showName) {
     embed.setAuthor({ name: user.displayName, iconURL: user.displayAvatarURL() });
   } else {
@@ -306,79 +288,73 @@ function buildFinalEmbed(user, session, destination, showName) {
   return embed;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  READY
-// ═══════════════════════════════════════════════════════════════
 client.once(Events.ClientReady, () => {
   console.log(`✅ البوت شغّال: ${client.user.tag}`);
 });
 
-// ═══════════════════════════════════════════════════════════════
-//  MESSAGE CREATE — handler واحد
-// ═══════════════════════════════════════════════════════════════
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
 
-  // ══════════════════════
-  //  DM
-  // ══════════════════════
+  // DM
   if (!msg.guild) {
-    const session = getSession(msg.author.id);
-    if (!session) return;
+    const uid = msg.author.id;
 
-    // انتظار المحتوى
-    if (session.step === "waiting_content") {
-      const text       = msg.content?.trim() || "";
-      const attachment = msg.attachments?.first();
-      const fileUrl    = attachment?.url || null;
+    if (processingUsers.has(uid)) return;
+    processingUsers.add(uid);
 
-      if (session.type === "text" && !text)
-        return msg.channel.send("❌ أرسل نصاً.");
+    try {
+      const session = getSession(uid);
+      if (!session) return;
 
-      if (["image","video","voice","all"].includes(session.type) && !fileUrl && !text)
-        return msg.channel.send("❌ أرسل ملفاً أو نصاً على الأقل.");
+      if (session.step === "waiting_content") {
+        const text       = msg.content?.trim() || "";
+        const attachment = msg.attachments?.first();
+        const fileUrl    = attachment?.url || null;
 
-      setSession(msg.author.id, {
-        ...session,
-        step:      "waiting_destination",
-        text:      text    || null,
-        fileUrl:   fileUrl || null,
-        expiresAt: Date.now() + 5 * 60 * 1000,
-      });
+        if (session.type === "text" && !text)
+          return await msg.channel.send("❌ أرسل نصاً.");
 
-      return msg.channel.send(buildAskDestination());
-    }
+        if (["image","video","voice","all"].includes(session.type) && !fileUrl && !text)
+          return await msg.channel.send("❌ أرسل ملفاً أو نصاً على الأقل.");
 
-    // انتظار ID العضو
-    if (session.step === "waiting_member_id") {
-      const rawId = msg.content?.trim().replace(/\D/g, "");
-      if (!rawId) return msg.channel.send("❌ أرسل ID صحيح (أرقام فقط).");
+        setSession(uid, {
+          ...session,
+          step:      "waiting_destination",
+          text:      text    || null,
+          fileUrl:   fileUrl || null,
+          expiresAt: Date.now() + 5 * 60 * 1000,
+        });
 
-      const guild  = client.guilds.cache.get(session.guildId);
-      const member = await guild?.members.fetch(rawId).catch(() => null);
+        return await msg.channel.send(buildAskDestination());
+      }
 
-      if (!member)
-        return msg.channel.send("❌ ما لقيت هذا العضو في السيرفر، تأكد من الـ ID وحاول مرة ثانية.");
+      if (session.step === "waiting_member_id") {
+        const rawId = msg.content?.trim().replace(/\D/g, "");
+        if (!rawId) return await msg.channel.send("❌ أرسل ID صحيح (أرقام فقط).");
 
-      // حفظ العضو المستلم والانتقال لسؤال الاسم
-      setSession(msg.author.id, {
-        ...session,
-        step:       "waiting_showname",
-        targetId:   member.id,
-        expiresAt:  Date.now() + 2 * 60 * 1000,
-      });
+        const guild  = client.guilds.cache.get(session.guildId);
+        const member = await guild?.members.fetch(rawId).catch(() => null);
 
-      return msg.channel.send(buildAskShowName("private"));
+        if (!member)
+          return await msg.channel.send("❌ ما لقيت هذا العضو في السيرفر، تأكد من الـ ID وحاول مرة ثانية.");
+
+        setSession(uid, {
+          ...session,
+          step:       "waiting_showname",
+          targetId:   member.id,
+          expiresAt:  Date.now() + 2 * 60 * 1000,
+        });
+
+        return await msg.channel.send(buildAskShowName("private"));
+      }
+    } finally {
+      processingUsers.delete(uid);
     }
 
     return;
   }
 
-  // ══════════════════════
-  //  السيرفر
-  // ══════════════════════
-
-  // لوق كل رسالة بالسيرفر
+  // السيرفر — لوق الرسائل
   const logFields = [
     { name: "💬 المحتوى", value: msg.content || "لا يوجد نص", inline: false },
     { name: "📍 القناة",  value: `<#${msg.channel.id}>`,       inline: true  },
@@ -397,14 +373,12 @@ client.on(Events.MessageCreate, async (msg) => {
   const isAdmin = msg.member?.permissions.has(PermissionFlagsBits.Administrator);
   const content = msg.content.trim();
 
-  // !setup_panel
   if (content === "!setup_panel") {
     if (!isAdmin) return msg.reply("❌ للأدمن فقط.");
     await msg.channel.send(buildPanel());
     return msg.delete().catch(() => {});
   }
 
-  // !commands
   if (content === "!commands") {
     const embed = new EmbedBuilder()
       .setTitle("📖 أوامر بوت الزاجل")
@@ -427,7 +401,6 @@ client.on(Events.MessageCreate, async (msg) => {
     return msg.delete().catch(() => {});
   }
 
-  // !ban
   if (content.startsWith("!ban ")) {
     if (!isAdmin) return msg.reply("❌ للأدمن فقط.");
     const target = msg.mentions.users.first();
@@ -438,14 +411,6 @@ client.on(Events.MessageCreate, async (msg) => {
     const until  = parseDuration(parts[0] || "permanent");
     const reason = parts.slice(1).join(" ") || "لا يوجد سبب";
     if (until === null) return msg.reply("❌ مدة خاطئة. استخدم: `1h` `1d` `7d` `permanent`");
-
-    if (!isBanned(target.id)) {
-      await target.send({ embeds: [new EmbedBuilder()
-        .setTitle("⚠️ تحذير — بوت الزاجل")
-        .setDescription(`تلقيت تحذيراً في **${msg.guild.name}**\n**السبب:** ${reason}`)
-        .setColor(C.orange).setTimestamp()
-      ]}).catch(() => {});
-    }
 
     addBan(target.id, { until, reason, bannedBy: msg.author.id, at: Date.now() });
 
@@ -472,7 +437,6 @@ client.on(Events.MessageCreate, async (msg) => {
     return;
   }
 
-  // !unban
   if (content.startsWith("!unban ")) {
     if (!isAdmin) return msg.reply("❌ للأدمن فقط.");
     const target = msg.mentions.users.first();
@@ -499,7 +463,6 @@ client.on(Events.MessageCreate, async (msg) => {
     return;
   }
 
-  // !bans
   if (content === "!bans") {
     if (!isAdmin) return msg.reply("❌ للأدمن فقط.");
     const list = Object.entries(getBans());
@@ -514,101 +477,94 @@ client.on(Events.MessageCreate, async (msg) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════
-//  INTERACTIONS
-// ═══════════════════════════════════════════════════════════════
 client.on(Events.InteractionCreate, async (interaction) => {
+  const lockKey = `${interaction.user.id}_${interaction.customId || "menu"}`;
+  if (processingInteractions.has(lockKey)) return;
+  processingInteractions.add(lockKey);
 
-  // ── زر البانل ──
-  if (interaction.isButton() && interaction.customId === "start_pigeon") {
-    if (isBanned(interaction.user.id)) {
-      const info = getBans()[interaction.user.id];
-      return interaction.reply({
-        content: `🚫 أنت محظور من البوت.\n**السبب:** ${info?.reason || "—"}\n**المتبقي:** ${formatDuration(info?.until)}`,
-        ephemeral: true,
+  try {
+    if (interaction.isButton() && interaction.customId === "start_pigeon") {
+      clearSession(interaction.user.id);
+
+      if (isBanned(interaction.user.id)) {
+        const info = getBans()[interaction.user.id];
+        return await interaction.reply({
+          content: `🚫 أنت محظور من البوت.\n**السبب:** ${info?.reason || "—"}\n**المتبقي:** ${formatDuration(info?.until)}`,
+          ephemeral: true,
+        });
+      }
+      try {
+        await interaction.user.send(buildWelcomeDM(interaction.user.displayName, interaction.guild.name));
+        await interaction.reply({ content: "✅ راجع رسائلك الخاصة!", ephemeral: true });
+      } catch {
+        await interaction.reply({ content: "❌ فعّل رسائل السيرفر من إعدادات الخصوصية.", ephemeral: true });
+      }
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === "cancel_session") {
+      clearSession(interaction.user.id);
+      return await interaction.update({
+        embeds: [new EmbedBuilder().setTitle("❌ تم الإلغاء").setColor(C.red)],
+        components: [],
       });
     }
-    try {
-      await interaction.user.send(buildWelcomeDM(interaction.user.displayName, interaction.guild.name));
-      await interaction.reply({ content: "✅ راجع رسائلك الخاصة!", ephemeral: true });
-    } catch {
-      await interaction.reply({ content: "❌ فعّل رسائل السيرفر من إعدادات الخصوصية.", ephemeral: true });
+
+    if (interaction.isButton() && interaction.customId === "send_public") {
+      const session = getSession(interaction.user.id);
+      if (!session) return await interaction.update({ content: "❌ انتهت الجلسة.", embeds: [], components: [] });
+
+      setSession(interaction.user.id, { ...session, step: "waiting_showname", destination: "public", expiresAt: Date.now() + 2 * 60 * 1000 });
+      return await interaction.update(buildAskShowName("public"));
     }
-    return;
-  }
 
-  // ── إلغاء ──
-  if (interaction.isButton() && interaction.customId === "cancel_session") {
-    clearSession(interaction.user.id);
-    return interaction.update({
-      embeds: [new EmbedBuilder().setTitle("❌ تم الإلغاء").setColor(C.red)],
-      components: [],
-    });
-  }
+    if (interaction.isButton() && interaction.customId === "send_private") {
+      const session = getSession(interaction.user.id);
+      if (!session) return await interaction.update({ content: "❌ انتهت الجلسة.", embeds: [], components: [] });
 
-  // ── إرسال للعام ──
-  if (interaction.isButton() && interaction.customId === "send_public") {
-    const session = getSession(interaction.user.id);
-    if (!session) return interaction.update({ content: "❌ انتهت الجلسة.", embeds: [], components: [] });
+      setSession(interaction.user.id, { ...session, step: "waiting_member_id", destination: "private", expiresAt: Date.now() + 2 * 60 * 1000 });
+      return await interaction.update(buildAskMemberId());
+    }
 
-    setSession(interaction.user.id, { ...session, step: "waiting_showname", destination: "public", expiresAt: Date.now() + 2 * 60 * 1000 });
-    return interaction.update(buildAskShowName("public"));
-  }
+    if (interaction.isButton() && interaction.customId === "show_name_yes") {
+      return await handleSend(interaction, true);
+    }
 
-  // ── إرسال لشخص ──
-  if (interaction.isButton() && interaction.customId === "send_private") {
-    const session = getSession(interaction.user.id);
-    if (!session) return interaction.update({ content: "❌ انتهت الجلسة.", embeds: [], components: [] });
+    if (interaction.isButton() && interaction.customId === "show_name_no") {
+      return await handleSend(interaction, false);
+    }
 
-    setSession(interaction.user.id, { ...session, step: "waiting_member_id", destination: "private", expiresAt: Date.now() + 2 * 60 * 1000 });
-    return interaction.update(buildAskMemberId());
-  }
+    if (interaction.isStringSelectMenu() && interaction.customId === "dm_type_select") {
+      const type    = interaction.values[0];
+      const guildId = client.guilds.cache.first()?.id || "";
 
-  // ── نعم أظهر اسمي ──
-  if (interaction.isButton() && interaction.customId === "show_name_yes") {
-    await handleSend(interaction, true);
-    return;
-  }
+      setSession(interaction.user.id, {
+        step:      "waiting_content",
+        type,
+        guildId,
+        text:      null,
+        fileUrl:   null,
+        expiresAt: Date.now() + 3 * 60 * 1000,
+      });
 
-  // ── لا، مجهول ──
-  if (interaction.isButton() && interaction.customId === "show_name_no") {
-    await handleSend(interaction, false);
-    return;
-  }
-
-  // ── منيو نوع الرسالة ──
-  if (interaction.isStringSelectMenu() && interaction.customId === "dm_type_select") {
-    const type    = interaction.values[0];
-    const guildId = client.guilds.cache.first()?.id || "";
-
-    setSession(interaction.user.id, {
-      step:      "waiting_content",
-      type,
-      guildId,
-      text:      null,
-      fileUrl:   null,
-      expiresAt: Date.now() + 3 * 60 * 1000,
-    });
-
-    return interaction.update(buildAskContent(type));
+      return await interaction.update(buildAskContent(type));
+    }
+  } finally {
+    setTimeout(() => processingInteractions.delete(lockKey), 1500);
   }
 });
 
-// ═══════════════════════════════════════════════════════════════
-//  HANDLE SEND — بعد اختيار الاسم
-// ═══════════════════════════════════════════════════════════════
 async function handleSend(interaction, showName) {
   const session = getSession(interaction.user.id);
-  if (!session) return interaction.update({ content: "❌ انتهت الجلسة.", embeds: [], components: [] });
+  if (!session) return await interaction.update({ content: "❌ انتهت الجلسة.", embeds: [], components: [] });
 
   const guild = client.guilds.cache.get(session.guildId);
 
-  // ── للعام ──
   if (session.destination === "public") {
     const ch = guild?.channels?.cache?.get(PUBLIC_CH_ID);
     if (!ch) {
       clearSession(interaction.user.id);
-      return interaction.update({
+      return await interaction.update({
         embeds: [new EmbedBuilder().setTitle("❌ خطأ").setDescription("قناة العام غير محددة.").setColor(C.red)],
         components: [],
       });
@@ -627,7 +583,6 @@ async function handleSend(interaction, showName) {
       components: [],
     });
 
-    // اللوق يظهر الاسم الحقيقي دايماً
     await log(guild, "📢 رسالة عامة", interaction.user, [
       { name: "النوع",     value: session.type,                          inline: true  },
       { name: "الاسم",     value: showName ? "✅ ظاهر" : "🕶️ مجهول",   inline: true  },
@@ -637,12 +592,11 @@ async function handleSend(interaction, showName) {
     return;
   }
 
-  // ── لشخص ──
   if (session.destination === "private") {
     const member = await guild?.members.fetch(session.targetId).catch(() => null);
     if (!member) {
       clearSession(interaction.user.id);
-      return interaction.update({
+      return await interaction.update({
         embeds: [new EmbedBuilder().setTitle("❌ خطأ").setDescription("ما لقيت العضو.").setColor(C.red)],
         components: [],
       });
@@ -662,7 +616,6 @@ async function handleSend(interaction, showName) {
         components: [],
       });
 
-      // اللوق يظهر كل شي — المرسل والمستلم
       await log(guild, "🔒 رسالة خاصة", interaction.user, [
         { name: "المستلم",   value: `<@${member.id}>\n\`${member.id}\``,  inline: true  },
         { name: "النوع",     value: session.type,                          inline: true  },
@@ -681,9 +634,7 @@ async function handleSend(interaction, showName) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  CLEANUP
-// ═══════════════════════════════════════════════════════════════
+// تنظيف الجلسات المنتهية
 setInterval(() => {
   const data = loadData();
   const now  = Date.now();
@@ -694,9 +645,7 @@ setInterval(() => {
   if (dirty) saveData(data);
 }, 60_000);
 
-// ═══════════════════════════════════════════════════════════════
-//  LOG EVENTS — كل شي يمر بالسيرفر
-// ═══════════════════════════════════════════════════════════════
+// لوق الأحداث
 client.on(Events.MessageUpdate, async (before, after) => {
   if (!after.guild || after.author?.bot) return;
   if (before.content === after.content) return;
@@ -733,12 +682,6 @@ client.on(Events.GuildMemberRemove, async (member) => {
   ], C.red);
 });
 
-// ═══════════════════════════════════════════════════════════════
-//  HTTP SERVER
-// ═══════════════════════════════════════════════════════════════
 http.createServer((_, res) => res.end("🕊️")).listen(process.env.PORT || 3000);
 
-// ═══════════════════════════════════════════════════════════════
-//  LOGIN
-// ═══════════════════════════════════════════════════════════════
 client.login(TOKEN);
